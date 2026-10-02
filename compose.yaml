@@ -1,0 +1,66 @@
+x-app: &app
+  build: .
+  image: dashbite:latest
+  environment: &pipeline-env
+    DATA_ROOT: ${DATA_ROOT:-/app/data}
+    TRAIN_EVERY_N_EVENTS: ${TRAIN_EVERY_N_EVENTS:-2000}
+    BATCH_SIZE: ${BATCH_SIZE:-50}
+    POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-15}
+    RANDOM_SEED: ${RANDOM_SEED:-42}
+    CORRUPT_BATCH_RATE: ${CORRUPT_BATCH_RATE:-0.25}
+    PYTHONUNBUFFERED: "1"
+  volumes:
+    - dashbite-data:${DATA_ROOT:-/app/data}
+  restart: unless-stopped
+
+services:
+  simulator:
+    <<: *app
+    command: ["python", "-m", "pipeline.simulator"]
+
+  preprocess:
+    <<: *app
+    command: ["python", "-m", "pipeline.preprocess"]
+
+  train:
+    <<: *app
+    command: ["python", "-m", "pipeline.train"]
+
+  infer:
+    <<: *app
+    command: ["python", "-m", "pipeline.infer"]
+
+  dashboard:
+    <<: *app
+    command:
+      [
+        "streamlit",
+        "run",
+        "pipeline/dashboard/app.py",
+        "--server.address=0.0.0.0",
+        "--server.port=8501",
+      ]
+    ports:
+      - "8501:8501"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=2).read()",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+  test:
+    <<: *app
+    profiles: ["test"]
+    command: ["python", "-m", "pytest"]
+    volumes: []
+    restart: "no"
+
+volumes:
+  dashbite-data:

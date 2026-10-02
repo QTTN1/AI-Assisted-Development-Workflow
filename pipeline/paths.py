@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from pipeline.config import PROJECT_ROOT
@@ -23,8 +24,10 @@ DATA_SUBDIRS = ("raw", "features", "models", "predictions", "quality")
 
 
 def data_root(base: Path | None = None) -> Path:
-    """Return the data root (default: <project>/data)."""
-    return (base or PROJECT_ROOT) / "data"
+    """Return the data root, honoring DATA_ROOT outside test workspaces."""
+    if base is not None:
+        return base / "data"
+    return Path(os.environ.get("DATA_ROOT", PROJECT_ROOT / "data"))
 
 
 def raw_dir(base: Path | None = None) -> Path:

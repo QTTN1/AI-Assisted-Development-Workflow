@@ -6,6 +6,7 @@ __pycache__/
 .streamlit/
 *.joblib
 .logs/
+.env
 
 # Runtime pipeline outputs — keep directory placeholders only
 data/**

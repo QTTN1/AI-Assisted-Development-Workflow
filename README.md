@@ -2,7 +2,7 @@
 
 Teaching demo of a modular data + ML application. **DashBite** predicts whether a food-delivery order will be **late**.
 
-No containers. Stages are separate Python modules that share folders under `data/`. Training and inference are **independent processes** coupled only by timestamped checkpoints in `data/models/`. Inference always uses the **newest** checkpoint.
+Run the stages as local processes with Make, or as separate Docker Compose services. The stages share files under `data/`; training and inference are **independent processes** coupled only by timestamped checkpoints in `data/models/`. Inference always uses the **newest** checkpoint.
 
 ## Stages
 
@@ -45,6 +45,43 @@ Agent demo prompts (independent Architect / Implementer / Reviewer chats): `make
 
 GitHub Pages (static copy of the board): https://kedar-v.github.io/TestingAndContainerisationDemo/  
 Rebuild after editing prompts: `make prompts-static`
+
+## Run with Docker Compose
+
+Requirements: Docker Engine and the Docker Compose plugin.
+
+```bash
+docker compose up --build -d
+docker compose ps                 # dashboard should become healthy
+docker compose logs -f simulator preprocess train infer dashboard
+docker compose run --build --rm test
+docker compose down               # keeps the named data volume
+```
+
+Open <http://localhost:8501> for Model Pulse. The dashboard healthcheck is reported
+by `docker compose ps`. Stage output is unbuffered so the `logs` command shows
+progress as it happens.
+
+Compose reads overrides from a root `.env` file. For example, to demonstrate
+preprocess quality failures, create `.env` with:
+
+```dotenv
+CORRUPT_BATCH_RATE=1.0
+```
+
+After startup, wait for a simulator batch and the preprocess poll. The dashboard's
+**Corrupt / invalid fields caught in preprocess** section should show nonzero
+counts. The per-batch detail is in `data/quality/batch_quality.csv` inside the
+named volume.
+Use `docker compose down --volumes` only when you also want to delete persisted
+pipeline data.
+
+Compose defaults are `TRAIN_EVERY_N_EVENTS=2000`, `BATCH_SIZE=50`, and
+`POLL_INTERVAL_SECONDS=15`; set these in `.env` to tune the demo. `DATA_ROOT`
+defaults to `/app/data` and may be overridden with an absolute container path.
+
+The Docker stack and the local Make background runner are separate ways to run
+the same stages; `make run` does not require Docker.
 
 ## Testing gate (required after every stage)
 

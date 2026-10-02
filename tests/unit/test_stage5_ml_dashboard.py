@@ -5,12 +5,15 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+from pipeline.dashboard.app import load_quality_log
 from pipeline.dashboard.ml_metrics import (
     late_flag_rate_over_time,
     sample_volume,
     score_summary,
     volume_over_time,
 )
+from pipeline.paths import ensure_data_dirs, quality_dir
+from pipeline.preprocess import QUALITY_LOG
 
 
 @pytest.mark.unit
@@ -79,3 +82,17 @@ def test_late_flag_rate_over_time_by_minute():
     assert rates.iloc[1]["late_flag_rate"] == pytest.approx(1.0)  # c=1, d=1
     assert late_flag_rate_over_time(pd.DataFrame(), features).empty
     assert late_flag_rate_over_time(preds, pd.DataFrame()).empty
+
+
+@pytest.mark.unit
+def test_dashboard_loads_quality_from_data_root_override(monkeypatch, tmp_path):
+    custom_root = tmp_path / "shared-data"
+    monkeypatch.setenv("DATA_ROOT", str(custom_root))
+    ensure_data_dirs()
+    (quality_dir() / QUALITY_LOG).write_text(
+        "rows_in,rows_out,fail_distance_km\n10,8,2\n"
+    )
+
+    quality = load_quality_log()
+
+    assert quality.loc[0, "fail_distance_km"] == 2

@@ -1,6 +1,6 @@
 # Dockerizing DashBite & Scaling with Kubernetes
 
-Guide for packaging each pipeline stage as a container and scaling those images independently on Kubernetes. This document is a **design/runbook guide** — the repo may still run as local Python processes without Docker installed.
+Runbook for the implemented Docker Compose stack, followed by design guidance for scaling the same stages on Kubernetes. The local Make background runner remains available without Docker.
 
 Related: [Low-Level Design](./lld-dashbite-ml-pipeline.md)
 
@@ -40,11 +40,13 @@ flowchart LR
 
 ---
 
-## Part 1 — How to Dockerize
+## Part 1 — Docker Compose
+
+The root `Dockerfile`, `.dockerignore`, and `compose.yaml` provide the runnable local stack. Run `docker compose up --build -d`, check `docker compose ps`, and use `docker compose logs -f simulator preprocess train infer dashboard` for live output. `docker compose run --build --rm test` runs the full pytest suite in a one-off container. `docker compose down` keeps the shared data volume; `docker compose down --volumes` deletes it.
 
 ### 1. Container-friendly data root
 
-Today paths default to `<project>/data`. For containers, support an env override:
+Paths default to `<project>/data` and honor the `DATA_ROOT` environment override when no test workspace is passed:
 
 - `DATA_ROOT=/app/data` (or `/data`)
 - All stages and the dashboard resolve `raw/`, `features/`, `models/`, `predictions/`, `quality/` under that root
@@ -62,6 +64,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY pipeline/ pipeline/
 ENV PYTHONPATH=/app
 ENV DATA_ROOT=/app/data
+ENV PYTHONUNBUFFERED=1
 # Command overridden per service in Compose / Kubernetes
 CMD ["python", "-m", "pipeline.simulator"]
 ```
@@ -72,10 +75,10 @@ Notes:
 - `.dockerignore` should exclude `.venv/`, local `data/`, `.pytest_cache/`, and ideally keep the image free of host test artifacts
 - No multi-stage build required for this teaching stack
 
-### 3. Docker Compose — one service per stage
+### 3. Compose services — one service per stage
 
 ```yaml
-# Conceptual shape — services share one named volume
+# compose.yaml shares one named volume and configures each stage
 services:
   simulator:
     image: dashbite:latest
@@ -86,6 +89,7 @@ services:
       BATCH_SIZE: "20"
       POLL_INTERVAL_SECONDS: "15"
       CORRUPT_BATCH_RATE: "0.25"
+      PYTHONUNBUFFERED: "1"
     volumes:
       - dashbite-data:/app/data
     restart: unless-stopped
@@ -121,6 +125,18 @@ services:
       - dashbite-data:/app/data
     ports:
       - "8501:8501"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=2).read()",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
 
 volumes:
   dashbite-data:
@@ -138,7 +154,9 @@ Typical local commands:
 
 ```bash
 docker compose up --build -d
-docker compose logs -f preprocess
+docker compose ps
+docker compose logs -f simulator preprocess train infer dashboard
+docker compose run --build --rm test
 docker compose down
 ```
 

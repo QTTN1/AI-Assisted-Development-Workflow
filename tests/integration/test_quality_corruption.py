@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pandas as pd
 import pytest
 
 from pipeline.paths import features_dir, quality_dir, raw_dir
@@ -26,6 +27,7 @@ def test_corrupted_batch_writes_quality_log(tmp_path):
 
     qpath = quality_dir(tmp_path) / QUALITY_LOG
     assert qpath.exists()
-    text = qpath.read_text()
-    assert "rows_in" in text
-    assert "fail_distance_km" in text
+    quality = pd.read_csv(qpath)
+    assert "rows_in" in quality.columns
+    assert "fail_distance_km" in quality.columns
+    assert quality.filter(like="fail_").to_numpy().sum() > 0
