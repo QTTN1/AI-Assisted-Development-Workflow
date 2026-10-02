@@ -1,144 +1,165 @@
-# DashBite — Simple Stage-by-Stage ML Pipeline
+# DashBite — Containerized Late-Order Prediction Pipeline
 
-Teaching demo of a modular data + ML application. **DashBite** predicts whether a food-delivery order will be **late**.
+**Assignment option:** Option 1 — Extend and Containerize DashBite
+**Based on:** [Kedar-V/TestingAndContainerisationDemo](https://github.com/Kedar-V/TestingAndContainerisationDemo) (class demo).
 
-Run the stages as local processes with Make, or as separate Docker Compose services. The stages share files under `data/`; training and inference are **independent processes** coupled only by timestamped checkpoints in `data/models/`. Inference always uses the **newest** checkpoint.
+## Purpose
 
-## Stages
+DashBite predicts whether a food-delivery order will be **late**. It runs as five independent stages that only communicate through files in a shared data folder:
 
-| Stage | Module | What it does |
-|-------|--------|----------------|
-| 0 | `pipeline.config`, `pipeline.paths` | Shared config + data folders |
-| 1 | `pipeline.simulator` | Writes timed CSV batches to `data/raw/` (“new orders arrived”) |
-| 2 | `pipeline.preprocess` | Drops bad rows, adds `hour` / `is_peak` → `data/features/` |
-| 3 | `pipeline.train` | Retrains when ≥ `TRAIN_EVERY_N_EVENTS` new labeled rows; writes checkpoints |
-| 4 | `pipeline.infer` | Scores unscored rows with newest checkpoint → `data/predictions/` |
-| 5 | `pipeline.dashboard` | Streamlit: **Model Pulse** |
+| Stage      | Module                  | What it does                                                                                |
+| ---------- | ----------------------- | ------------------------------------------------------------------------------------------- |
+| Simulator  | `pipeline.simulator`  | Writes a batch of 50 orders every 15 s to`raw/` (some batches are deliberately corrupted) |
+| Preprocess | `pipeline.preprocess` | Drops bad rows, adds features →`features/`, logs field failures → `quality/`          |
+| Train      | `pipeline.train`      | Retrains after every 2,000 new labeled rows →`models/checkpoint_*.joblib`                |
+| Infer      | `pipeline.infer`      | Scores new rows with the newest checkpoint →`predictions/`                               |
+| Dashboard  | `pipeline.dashboard`  | Streamlit "Model Pulse" at http://localhost:8501                                            |
 
-## Setup
+The original only ran on macOS/Linux (the Makefile uses `.venv/bin` paths and a bash background script). I'm on Windows, so the goal was to make the whole pipeline run with one Docker command on any OS, and to make it behave well as a container.
+
+## What I changed
+
+- **Dockerfile + `.dockerignore`:** one shared `python:3.12-slim` image for all stages.
+- **`compose.yaml`:** one service per stage, all sharing one named volume.
+- **Container-readiness improvements:**
+  - **Configurable data path:** `DATA_ROOT` env var instead of the hardcoded `<project>/data`.
+  - **Persistent storage:** a named volume (`dashbite-data`) keeps data and models across `docker compose down`.
+  - **Dashboard health check** against Streamlit's `/_stcore/health` endpoint.
+  - **Bounded restarts:** `restart: on-failure:3`, so a crashed stage retries 3 times and then stays stopped for me to inspect instead of looping forever.
+  - **Unbuffered logs:** `PYTHONUNBUFFERED=1`, so `docker compose logs` shows progress live.
+  - **Containerized tests:** a `test` service runs pytest inside the image.
+  - **`.env` overrides** for all pipeline settings.
+- The local `make run/status/stop` workflow still works for macOS/Linux users.
+
+## Install and run (Docker)
+
+Requirements: Docker Desktop (or Docker Engine + Compose plugin). Commands are for bash (Git Bash on Windows works).
 
 ```bash
-make install
+git clone https://github.com/QTTN1/AI-Assisted-Development-Workflow.git
+cd AI-Assisted-Development-Workflow
+
+docker compose up --build -d      # build the image and start all 5 stages
+docker compose ps                 # all services "Up", dashboard "(healthy)"
+docker compose logs -f simulator preprocess train infer   # Ctrl+C to stop following
+# open http://localhost:8501
+docker compose down               # stop (data volume is kept)
+docker compose down --volumes     # stop AND delete all pipeline data
 ```
 
-Or manually:
+**Note:** the first model and predictions appear after about **10 minutes**. Training waits for 2,000 rows (50 rows every 15 s). That's DashBite's default behavior. Lower it with `TRAIN_EVERY_N_EVENTS` in `.env` if you want faster results.
+
+If a stage stops after its 3 restart attempts, check and restart it manually:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+docker compose logs --tail 50 <service>
+docker compose restart <service>
+```
+
+### Configuration
+
+Create a `.env` file in the project root to override defaults (it's gitignored):
+
+```bash
+echo "CORRUPT_BATCH_RATE=1.0" > .env                                 # bash
+# PowerShell: Set-Content .env 'CORRUPT_BATCH_RATE=1.0'
+docker compose up -d --force-recreate
+docker compose exec simulator printenv CORRUPT_BATCH_RATE         # confirm it applied
+```
+
+| Variable                  | Default       | Meaning                                   |
+| ------------------------- | ------------- | ----------------------------------------- |
+| `TRAIN_EVERY_N_EVENTS`  | `2000`      | Retrain after this many new labeled rows  |
+| `BATCH_SIZE`            | `50`        | Orders per simulator batch                |
+| `POLL_INTERVAL_SECONDS` | `15`        | Seconds between batches/polls             |
+| `CORRUPT_BATCH_RATE`    | `0.25`      | Fraction of batches that contain bad rows |
+| `RANDOM_SEED`           | `42`        | Training seed                             |
+| `DATA_ROOT`             | `/app/data` | Data folder inside the containers         |
+
+**Reading the drop rate:** a corrupted batch drops 15 of its 50 rows (30%), and a clean batch drops 0%. The dashboard's **Drop rate** is a running average over *all* batches in the volume, so after changing `CORRUPT_BATCH_RATE` it moves gradually instead of jumping. Per-batch numbers are in `docker compose logs preprocess`.
+
+## Testing
+
+```bash
+docker compose run --build --rm test      # full pytest suite inside the container
+```
+
+Locally (any OS, Python 3.12):
+
+```bash
 pip install -r requirements.txt
+python -m pytest                           # unit + regression + integration
 ```
 
-## Makefile shortcuts
+Local background runner (macOS/Linux only): `make install`, `make run`, `make status`, `make stop`.
 
-```bash
-make help          # list targets
-make test          # full pytest gate
-make run           # start all stages in background + dashboard
-make stop          # stop background pipeline
-make clean-data    # wipe runtime CSVs/checkpoints under data/
-```
+## Manual smoke test
 
-Foreground single stages: `make simulator`, `make preprocess`, `make train`, `make infer`, `make dashboard`.
+Run by me on Windows 11 (Git Bash/PowerShell, Docker Desktop).
 
-Agent demo prompts (independent Architect / Implementer / Reviewer chats): `make prompts` → http://localhost:8502
+**First run (after the Builder stage):**
 
-GitHub Pages (static copy of the board): https://kedar-v.github.io/TestingAndContainerisationDemo/  
-Rebuild after editing prompts: `make prompts-static`
+| Check                            | Result                                                                                                                             |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `docker compose up --build -d` | ✅ image built, 5 containers started, volume created                                                                               |
+| `docker compose ps`            | ⚠️ all 5 "Up", but no health status shown for the dashboard                                                                    |
+| Stage logs                       | ❌`docker compose logs` printed nothing for simulator/train/infer                                                                |
+| Dashboard                        | ⚠️ loaded and showed order volume (1,600 samples), but**drop rate and field failures stayed at 0%** and no predictions yet |
+| Restart (`down` → `up -d`)  | ✅ restarted cleanly, volume kept                                                                                                  |
+| Local`python -m pytest`        | ✅ 32 passed                                                                                                                       |
 
-## Run with Docker Compose
+I sent these problems to the Tester -->
 
-Requirements: Docker Engine and the Docker Compose plugin.
+**Final run (after the Tester fixes):**
 
-```bash
-docker compose up --build -d
-docker compose ps                 # dashboard should become healthy
-docker compose logs -f simulator preprocess train infer dashboard
-docker compose run --build --rm test
-docker compose down               # keeps the named data volume
-```
+| Check              | Result                                                                                                                                         |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Build + start      | ✅ all 5 services up                                                                                                                           |
+| Dashboard          | ✅ drop rate ~30% on corrupted batches, late-flag rate ~52–53%, field-failures chart populated (prep_minutes and distance_km most common)     |
+| Predictions        | ✅ appeared once training passed 2,000 rows                                                                                                    |
+| Logs               | ✅ preprocess prints per-batch lines, e.g.`35/50 rows kept, drop_rate=30.0%`                                                                 |
+| Corruption setting | ✅`CORRUPT_BATCH_RATE=1.0` in `.env` → `printenv` showed `1.0`, every batch dropped 15/50 rows, dashboard drop rate climbed 9% → 10% |
+| Health check       | ✅ dashboard shows`(healthy)`                                                                                                                |
+| Tests              | ✅ all tests passed                                                                                                                           |
 
-Open <http://localhost:8501> for Model Pulse. The dashboard healthcheck is reported
-by `docker compose ps`. Stage output is unbuffered so the `logs` command shows
-progress as it happens.
+Screenshots: `docs/screenshots/` [add dashboard + `docker compose ps` screenshots].
 
-Compose reads overrides from a root `.env` file. For example, to demonstrate
-preprocess quality failures, create `.env` with:
+## How each AI role contributed
 
-```dotenv
-CORRUPT_BATCH_RATE=1.0
-```
+All three roles used GitHub Copilot in VS Code, each in a fresh chat. Transcripts are in `docs/transcripts/`.
 
-After startup, wait for a simulator batch and the preprocess poll. The dashboard's
-**Corrupt / invalid fields caught in preprocess** section should show nonzero
-counts. The per-batch detail is in `data/quality/batch_quality.csv` inside the
-named volume.
-Use `docker compose down --volumes` only when you also want to delete persisted
-pipeline data.
+- **Architect:** read the repo and found that `paths.py` and the dashboard hardcode the data folder. It then gave me options for storage, restart behavior and health checks instead of deciding for me. I asked for an alternative a named volume, `on-failure:3` restarts and health checks, and it wrote the plan to `docs/plan.md`.
+- **Builder:** wrote the Dockerfile, `compose.yaml`, `.dockerignore`, the `DATA_ROOT` config change, tests and the Docker README section. It also did the work in a separate git worktree, so I had to have it move the changes into `main`.
+- **Tester:** compared the build against `docs/plan.md` and found that the Builder had deleted the data-corruption feature and its tests, along with the Makefile background runner. That explained my 0% drop rate. It also confirmed the missing health check and empty logs. With my priorities, it restored the corruption path and tests, restored the local runner, added the health check and unbuffered logs, and explained how the drop rate is calculated.
 
-Compose defaults are `TRAIN_EVERY_N_EVENTS=2000`, `BATCH_SIZE=50`, and
-`POLL_INTERVAL_SECONDS=15`; set these in `.env` to tune the demo. `DATA_ROOT`
-defaults to `/app/data` and may be overridden with an absolute container path.
+## AI recommendations I accepted
 
-The Docker stack and the local Make background runner are separate ways to run
-the same stages; `make run` does not require Docker.
+- **Named Docker volume** instead of bind-mounting `data/`. It avoids Windows path and permission problems.
+- **Dashboard health check against Streamlit's health endpoint** and **`PYTHONUNBUFFERED=1`**, both from the Tester.
+- **Not restoring the prompt-board / static-site files.** The Tester pointed out those were the actual teaching material, unlike the corruption feature.
 
-## Testing gate (required after every stage)
+## Recommendations I changed or rejected
 
-After each stage you implement or change, run the **full** suite:
+- **Restart policy:** the Architect recommended `restart: unless-stopped`. I rejected it because a real bug would restart forever, and changed it to `on-failure:3` so failures stop and I can check the logs. The Builder still shipped `unless-stopped`, so I corrected `compose.yaml` myself.
+- **Classroom framing:** the Builder built everything as a teaching demo. I told it to refocus on a working containerized app. It then over-deleted and removed the corruption feature, which I had the tester restore.
+- **The ~10-minute delay before predictions:** the Tester flagged it, but I chose not to change it. It's DashBite's default training threshold, so I documented it instead of changing pipeline behavior.
+- **Health checks on all five services:** I originally chose this in the Architect stage. In the end only the dashboard has one, because the other stages are loop processes with no endpoint to probe, and checking them through `docker compose ps` and the logs was enough. *(Known deviation from the plan.)*
 
-```bash
-pytest
-```
+## How I verified the final result
 
-That runs **unit**, **regression**, and **integration** tests together so new work cannot break older stages.
+- Ran the full test suite myself, locally and in the container.
+- Rebuilt from a fresh volume (`docker compose down --volumes`, then `up --build -d`) and watched the dashboard until predictions and field failures appeared.
+- Read the preprocess logs to confirm each batch was either clean or corrupted, about 1 in 4 batches at the default rate.
+- Tested the `.env` override. My first attempt silently didn't apply because the `.env` file wasn't in the project folder. I caught it by checking `printenv CORRUPT_BATCH_RATE` inside the container and fixed it, then confirmed the dashboard drop rate moved as expected.
+- Checked `git status` and after each AI stage, which is how I caught the Builder's deleted files and the plan that was left on a side branch.
 
-```bash
-pytest -m unit
-pytest -m regression
-pytest -m integration
-```
-
-Layout:
+## Repository layout
 
 ```
-tests/
-  unit/
-  regression/
-  integration/
-  fixtures/
+compose.yaml, Dockerfile, .dockerignore
+pipeline/        stage code (config, paths, simulator, preprocess, train, infer, dashboard)
+tests/           unit / regression / integration
+scripts/         local background runner (macOS/Linux)
+docs/plan.md     Architect plan
+docs/transcripts/ttn21_architect.txt, ttn21_builder.txt, ttn21_tester.txt
 ```
-
-## Run the pipeline (background stack)
-
-Classroom default — durable background jobs:
-
-```bash
-make run                 # simulator + preprocess + train + infer + Model Pulse
-make status              # confirm each stage is UP
-open http://localhost:8501
-make stop
-```
-
-Logs: `.logs/*.log` · PIDs: `.logs/pids/` · Poll default: `POLL_INTERVAL_SECONDS=15`
-
-Foreground single stages (one terminal each): `make simulator`, `make preprocess`, `make train`, `make infer`, `make dashboard`.
-
-## Config (environment)
-
-| Variable | Default | Meaning |
-|----------|---------|---------|
-| `TRAIN_EVERY_N_EVENTS` | `2000` | Retrain after this many **new** labeled rows |
-| `BATCH_SIZE` | `50` | Orders per simulator tick |
-| `POLL_INTERVAL_SECONDS` | `15.0` | Sleep between polls/ticks |
-| `RANDOM_SEED` | `42` | Training seed |
-| `CORRUPT_BATCH_RATE` | `0.25` | Fraction of batches that include NaNs / bad types |
-
-Preprocess logs per-batch **throughput** and **field-level failures** to `data/quality/batch_quality.csv`. Model Pulse shows these live.
-
-## Design notes for class
-
-- Intake uses **batch CSV files** under the hood; logs say “new orders arrived”.
-- Train **only writes** `data/models/checkpoint_*.joblib`.
-- Infer **only reads** that folder and never imports train.
-- Dashboards read `data/features/` and `data/predictions/` — test the metric helpers with `pytest`, not the browser UI.
