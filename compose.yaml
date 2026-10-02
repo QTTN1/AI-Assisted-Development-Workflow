@@ -11,7 +11,7 @@ x-app: &app
     PYTHONUNBUFFERED: "1"
   volumes:
     - dashbite-data:${DATA_ROOT:-/app/data}
-  restart: unless-stopped
+  restart: on-failure:3
 
 services:
   simulator:
