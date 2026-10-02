@@ -122,7 +122,6 @@ I sent these problems to the Tester -->
 | Health check       | ✅ dashboard shows`(healthy)`                                                                                                                |
 | Tests              | ✅ all tests passed                                                                                                                           |
 
-Screenshots: `docs/screenshots/` [add dashboard + `docker compose ps` screenshots].
 
 ## How each AI role contributed
 
